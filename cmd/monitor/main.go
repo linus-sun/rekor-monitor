@@ -1,5 +1,5 @@
 //
-// Copyright 2021 The Sigstore Authors.
+// Copyright 2024 The Sigstore Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -103,7 +103,26 @@ func main() {
 		config.OutputIdentitiesFile = outputIdentitiesFileName
 	}
 
-	err = rekor.IdentitySearch(*config.StartIndex, *config.EndIndex, rekorClient, config.MonitoredValues, config.OutputIdentitiesFile)
+	for _, certID := range config.MonitoredValues.CertificateIdentities {
+		if len(certID.Issuers) == 0 {
+			fmt.Printf("Monitoring certificate subject %s\n", certID.CertSubject)
+		} else {
+			fmt.Printf("Monitoring certificate subject %s for issuer(s) %s\n", certID.CertSubject, strings.Join(certID.Issuers, ","))
+		}
+	}
+	for _, fp := range config.MonitoredValues.Fingerprints {
+		fmt.Printf("Monitoring fingerprint %s\n", fp)
+	}
+	for _, sub := range config.MonitoredValues.Subjects {
+		fmt.Printf("Monitoring subject %s\n", sub)
+	}
+
+	monitoredIdentities, err := rekor.IdentitySearch(*config.StartIndex, *config.EndIndex, rekorClient, config.MonitoredValues, config.OutputIdentitiesFile)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	err = config.TriggerNotifications(monitoredIdentities)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
