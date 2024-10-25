@@ -20,14 +20,14 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/sigstore/rekor-monitor/pkg/identity"
 	"github.com/sigstore/rekor-monitor/pkg/rekor"
 	"github.com/sigstore/rekor/pkg/client"
-	"gopkg.in/yaml.v3"
+	"gopkg.in/yaml.v2"
 
 	"sigs.k8s.io/release-utils/version"
 )
@@ -44,36 +44,52 @@ const (
 // indefinitely to perform consistency check for every time interval that was specified.
 func main() {
 	// Command-line flags that are parameters to the verifier job
-	serverURL := flag.String("url", publicRekorServerURL, "URL to the rekor server that is to be monitored")
-	interval := flag.Duration("interval", 5*time.Minute, "Length of interval between each periodical consistency check")
-	logInfoFile := flag.String("file", logInfoFileName, "Name of the file containing initial merkle tree information")
+	configFilePath := flag.String("config-file", "", "Name of the file containing the consistency check workflow configuration settings")
+	configString := flag.String("config-string", "", "Consistency check workflow configuration settings input as a string")
 	once := flag.Bool("once", false, "Perform consistency check once and exit")
-	monitoredValsInput := flag.String("monitored-values", "", "yaml of certificate subjects and issuers, key subjects, "+
-		"and fingerprints. For certificates, if no issuers are specified, match any OIDC provider.")
-	outputIdentitiesFile := flag.String("output-identities", outputIdentitiesFileName,
-		"Name of the file containing indices and identities found in the log. Format is \"subject issuer index uuid\"")
+	logInfoFile := flag.String("file", "", "path to log info file")
 	userAgentString := flag.String("user-agent", "", "details to include in the user agent string")
 	flag.Parse()
 
-	var monitoredVals identity.MonitoredValues
-	if err := yaml.Unmarshal([]byte(*monitoredValsInput), &monitoredVals); err != nil {
-		log.Fatalf("error parsing identities: %v", err)
-	}
-	for _, certID := range monitoredVals.CertificateIdentities {
-		if len(certID.Issuers) == 0 {
-			fmt.Printf("Monitoring certificate subject %s\n", certID.CertSubject)
-		} else {
-			fmt.Printf("Monitoring certificate subject %s for issuer(s) %s\n", certID.CertSubject, strings.Join(certID.Issuers, ","))
-		}
-	}
-	for _, fp := range monitoredVals.Fingerprints {
-		fmt.Printf("Monitoring fingerprint %s\n", fp)
-	}
-	for _, sub := range monitoredVals.Subjects {
-		fmt.Printf("Monitoring subject %s\n", sub)
+	if configFilePath == nil && configString == nil {
+		log.Fatalf("empty configuration input")
 	}
 
-	rekorClient, err := client.GetRekorClient(*serverURL, client.WithUserAgent(strings.TrimSpace(fmt.Sprintf("rekor-monitor/%s (%s; %s) %s", version.GetVersionInfo().GitVersion, runtime.GOOS, runtime.GOARCH, *userAgentString))))
+	if configFilePath != nil && configString != nil {
+		log.Fatalf("only input one of --config-file or --config-string")
+	}
+
+	var config ConsistencyCheckConfiguration
+	if configString != nil {
+		if err := yaml.Unmarshal([]byte(*configString), &config); err != nil {
+			log.Fatalf("error parsing identities: %v", err)
+		}
+	}
+
+	if configFilePath != nil {
+		readConfig, err := os.ReadFile(*configFilePath)
+		if err != nil {
+			log.Fatalf("error reading from identity monitor configuration file: %v", err)
+		}
+		if err := yaml.Unmarshal([]byte(readConfig), &config); err != nil {
+			log.Fatalf("error parsing identities: %v", err)
+		}
+	}
+
+	if config.ServerURL == "" {
+		config.ServerURL = publicRekorServerURL
+	}
+	if config.Interval == nil {
+		defaultInterval := time.Hour
+		config.Interval = &defaultInterval
+	}
+
+	if logInfoFile == nil {
+		defaultLogInfoFile := logInfoFileName
+		logInfoFile = &defaultLogInfoFile
+	}
+
+	rekorClient, err := client.GetRekorClient(config.ServerURL, client.WithUserAgent(strings.TrimSpace(fmt.Sprintf("rekor-monitor/%s (%s; %s) %s", version.GetVersionInfo().GitVersion, runtime.GOOS, runtime.GOARCH, userAgentString))))
 	if err != nil {
 		log.Fatalf("getting Rekor client: %v", err)
 	}
@@ -83,13 +99,29 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = rekor.VerifyConsistencyCheckInputs(interval, logInfoFile, outputIdentitiesFile, once)
+	err = rekor.VerifyConsistencyCheckInputs(config.Interval, logInfoFile, &config.OutputIdentitiesFile, once)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = rekor.RunConsistencyCheck(*interval, rekorClient, verifier, *logInfoFile, monitoredVals, *outputIdentitiesFile, *once)
-	if err != nil {
-		log.Fatalf("%v", err)
+	ticker := time.NewTicker(*config.Interval)
+	defer ticker.Stop()
+
+	// Loop will:
+	// 1. Fetch latest checkpoint and verify
+	// 2. If old checkpoint is present, verify consistency proof
+	// 3. Write latest checkpoint to file
+
+	// To get an immediate first tick
+	for ; ; <-ticker.C {
+		err = rekor.RunConsistencyCheck(*config.Interval, rekorClient, verifier, *logInfoFile, config.MonitoredValues, config.OutputIdentitiesFile, *once)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error running consistency check: %v", err)
+			return
+		}
+
+		if *once {
+			return
+		}
 	}
 }

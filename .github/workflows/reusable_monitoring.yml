@@ -30,8 +30,8 @@ on:
         required: false
         type: number
         default: 14
-      identities:
-        description: 'multiline yaml of certificate subjects and issuers, key subjects, and fingerprints. For certificates, if no issuers are specified, match any OIDC provider'
+      config:
+        description: 'multiline yaml of workflow configuration settings, including rekor server URL, identities including certificate subjects and issuers, key subjects, and fingerprints. For certificates, if no issuers are specified, match any OIDC provider'
         required: false
         type: string
 
@@ -76,7 +76,7 @@ jobs:
         run: cat ${{ env.LOG_FILE }}
         # Skip on first run
         continue-on-error: true
-      - run: go run ./cmd/verifier --file ${{ env.LOG_FILE }} --once --monitored-values "${{ inputs.identities }}" --user-agent "${{ format('{0}/{1}/{2}', needs.detect-workflow.outputs.repository, needs.detect-workflow.outputs.ref, github.run_id) }}"
+      - run: go run ./cmd/verifier --file ${{ env.LOG_FILE }} --once --config "${{ inputs.config }}" --user-agent "${{ format('{0}/{1}/{2}', needs.detect-workflow.outputs.repository, needs.detect-workflow.outputs.ref, github.run_id) }}"
       - name: Upload checkpoint
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
