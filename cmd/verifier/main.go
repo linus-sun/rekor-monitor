@@ -79,6 +79,7 @@ func main() {
 	if config.ServerURL == "" {
 		config.ServerURL = publicRekorServerURL
 	}
+
 	if config.Interval == nil {
 		defaultInterval := time.Hour
 		config.Interval = &defaultInterval
